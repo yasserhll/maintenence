@@ -11,13 +11,13 @@ return new class extends Migration {
             $table->id();
             $table->foreignId('inventaire_id')->constrained('inventaires')->onDelete('cascade');
             $table->foreignId('article_id')->constrained()->onDelete('cascade');
-            $table->integer('stock_theorique')->default(0);  // calculé auto (stockInit + entrées - sorties)
-            $table->integer('stock_trouve')->nullable();     // saisi manuellement une seule fois
-            $table->integer('ecart')->nullable();            // stock_trouve - stock_theorique
+            $table->integer('stock_theorique')->default(0);
+            $table->integer('stock_trouve')->default(0);   // 0 = non encore compté
+            $table->integer('ecart')->default(0);
             $table->text('observation')->nullable();
             $table->timestamps();
 
-            $table->unique(['inventaire_id', 'article_id']); // une ligne par article
+            $table->unique(['inventaire_id', 'article_id']);
         });
     }
 

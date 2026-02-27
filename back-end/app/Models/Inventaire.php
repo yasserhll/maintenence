@@ -48,17 +48,21 @@ class Inventaire extends Model
 
             if ($ligne) {
                 $ligne->stock_theorique = $theorique;
-                if ($ligne->stock_trouve !== null) {
+                // Recalcule l'écart seulement si stock_trouve a été saisi (> 0 ou explicitement défini)
+                if ($ligne->getRawOriginal('stock_trouve') !== null && $ligne->stock_trouve !== null) {
                     $ligne->ecart = $ligne->stock_trouve - $theorique;
                 }
                 $ligne->save();
             } else {
-                $this->lignes()->create([
-                    'article_id'      => $article->id,
-                    'stock_theorique' => $theorique,
-                    'stock_trouve'    => null,
-                    'ecart'           => null,
-                ]);
+                // Utilise updateOrCreate pour éviter les doublons et gérer les colonnes NOT NULL
+                $this->lignes()->updateOrCreate(
+                    ['article_id' => $article->id],
+                    [
+                        'stock_theorique' => $theorique,
+                        'stock_trouve'    => 0,   // valeur neutre compatible NOT NULL
+                        'ecart'           => 0,
+                    ]
+                );
             }
         }
 
