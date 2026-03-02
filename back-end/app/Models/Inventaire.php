@@ -4,68 +4,63 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
 
 class Inventaire extends Model
 {
-    protected $fillable = ['site', 'date_creation', 'derniere_maj'];
+    protected $fillable = ['site_id', 'site', 'date_creation', 'derniere_maj'];
+    protected $casts = ['date_creation' => 'date:Y-m-d', 'derniere_maj' => 'datetime'];
 
-    protected $casts = [
-        'date_creation' => 'date:Y-m-d',
-        'derniere_maj'  => 'datetime',
-    ];
+    public function lignes(): HasMany { return $this->hasMany(LigneInventaire::class); }
 
-    public function lignes(): HasMany
+    public static function getOrCreateForSite(int $siteId): self
     {
-        return $this->hasMany(LigneInventaire::class);
-    }
-
-    /**
-     * Récupère ou crée l'inventaire unique pour un site.
-     */
-    public static function getOrCreateForSite(string $site = 'Benguerir'): self
-    {
+        $site = Site::find($siteId);
         return self::firstOrCreate(
-            ['site' => $site],
-            ['date_creation' => now()->toDateString(), 'derniere_maj' => now()]
+            ['site_id' => $siteId],
+            ['site' => $site?->nom ?? 'Site', 'date_creation' => now()->toDateString(), 'derniere_maj' => now()]
         );
     }
 
-    /**
-     * Recalcule le stock_theorique de toutes les lignes
-     * et ajoute les nouveaux articles s'il en manque.
-     * Appelé automatiquement après chaque entrée/sortie.
-     */
-    public function recalculer(): void
+    public function mettreAJourLigne(Article $article): void
     {
-        $articles = Article::with(['entrees', 'sorties'])->get();
+        $theorique = (int)$article->stock_actuel;
+        $ligne = $this->lignes()->where('article_id', $article->id)->first();
 
-        foreach ($articles as $article) {
-            $theorique = $article->stock_initial
-                + $article->entrees->sum('quantite')
-                - $article->sorties->sum('quantite');
-
-            $ligne = $this->lignes()->where('article_id', $article->id)->first();
-
-            if ($ligne) {
-                $ligne->stock_theorique = $theorique;
-                // Recalcule l'écart seulement si stock_trouve a été saisi (> 0 ou explicitement défini)
-                if ($ligne->getRawOriginal('stock_trouve') !== null && $ligne->stock_trouve !== null) {
-                    $ligne->ecart = $ligne->stock_trouve - $theorique;
-                }
-                $ligne->save();
-            } else {
-                // Utilise updateOrCreate pour éviter les doublons et gérer les colonnes NOT NULL
-                $this->lignes()->updateOrCreate(
-                    ['article_id' => $article->id],
-                    [
-                        'stock_theorique' => $theorique,
-                        'stock_trouve'    => 0,   // valeur neutre compatible NOT NULL
-                        'ecart'           => 0,
-                    ]
-                );
+        if ($ligne) {
+            $ligne->stock_theorique = $theorique;
+            if ($ligne->stock_trouve !== null && $ligne->stock_trouve > 0) {
+                $ligne->ecart = $ligne->stock_trouve - $theorique;
             }
+            $ligne->save();
+        } else {
+            $this->lignes()->create([
+                'site_id'         => $this->site_id,
+                'article_id'      => $article->id,
+                'stock_theorique' => $theorique,
+                'stock_trouve'    => 0,
+                'ecart'           => 0,
+            ]);
         }
+        $this->update(['derniere_maj' => now()]);
+    }
 
+    public function recalculer(?int $siteId = null): void
+    {
+        $sid = $siteId ?? $this->site_id;
+
+        DB::statement("
+            UPDATE articles a
+            SET a.stock_actuel = a.stock_initial
+                + COALESCE((SELECT SUM(e.quantite) FROM entrees e WHERE e.article_id = a.id), 0)
+                - COALESCE((SELECT SUM(s.quantite) FROM sorties s WHERE s.article_id = a.id), 0)
+            WHERE a.site_id = {$sid}
+        ");
+
+        $articles = Article::where('site_id', $sid)->get();
+        foreach ($articles as $article) {
+            $this->mettreAJourLigne($article);
+        }
         $this->update(['derniere_maj' => now()]);
     }
 }

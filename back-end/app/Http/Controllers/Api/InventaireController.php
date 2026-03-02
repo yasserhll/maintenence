@@ -7,40 +7,52 @@ use App\Models\Inventaire;
 use App\Models\LigneInventaire;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class InventaireController extends Controller
 {
-    /**
-     * Retourne l'inventaire unique du site avec toutes ses lignes.
-     * Les stock_theorique sont toujours à jour (recalculés à chaque entrée/sortie).
-     */
-    public function show(): JsonResponse
+    private function getSiteId(Request $request): int
     {
-        $inventaire = Inventaire::getOrCreateForSite('Benguerir');
-
-        // Si l'inventaire vient d'être créé (aucune ligne), on calcule une première fois
-        if ($inventaire->lignes()->count() === 0) {
-            $inventaire->recalculer();
-        }
-
-        $inventaire->load(['lignes.article' => function ($q) {
-            $q->orderBy('designation');
-        }]);
-
-        return response()->json($inventaire);
+        if (!$request->user()->isSuperAdmin()) return (int)$request->user()->site_id;
+        return (int)$request->input('site_id', $request->user()->site_id ?? 1);
     }
 
-    /**
-     * Sauvegarde les stock_trouve saisis manuellement par l'utilisateur.
-     * Ne recalcule PAS le stock_theorique (déjà à jour).
-     */
+    public function show(Request $request): JsonResponse
+    {
+        $siteId = $this->getSiteId($request);
+        $inventaire = Inventaire::getOrCreateForSite($siteId);
+
+        if ($inventaire->lignes()->count() === 0) {
+            $inventaire->recalculer($siteId);
+        }
+
+        $lignes = $inventaire->lignes()->with('article')->get()->map(function ($ligne) {
+            $article = $ligne->article;
+            if ($article) {
+                $ligne->total_entrees = (int) DB::table('entrees')->where('article_id', $article->id)->sum('quantite');
+                $ligne->total_sorties = (int) DB::table('sorties')->where('article_id', $article->id)->sum('quantite');
+            } else {
+                $ligne->total_entrees = 0;
+                $ligne->total_sorties = 0;
+            }
+            return $ligne;
+        });
+
+        return response()->json([
+            'id' => $inventaire->id, 'site' => $inventaire->site,
+            'date_creation' => $inventaire->date_creation,
+            'derniere_maj' => $inventaire->derniere_maj,
+            'lignes' => $lignes,
+        ]);
+    }
+
     public function saveTrouves(Request $request): JsonResponse
     {
         $request->validate([
-            'lignes'                    => 'required|array',
-            'lignes.*.id'               => 'required|exists:lignes_inventaire,id',
-            'lignes.*.stock_trouve'     => 'required|integer|min:0',
-            'lignes.*.observation'      => 'nullable|string',
+            'lignes' => 'required|array',
+            'lignes.*.id' => 'required|exists:lignes_inventaire,id',
+            'lignes.*.stock_trouve' => 'required|integer|min:0',
+            'lignes.*.observation' => 'nullable|string',
         ]);
 
         foreach ($request->lignes as $item) {
@@ -51,20 +63,16 @@ class InventaireController extends Controller
             $ligne->save();
         }
 
-        $inventaire = Inventaire::getOrCreateForSite('Benguerir');
-        $inventaire->update(['derniere_maj' => now()]);
-
+        $siteId = $this->getSiteId($request);
+        Inventaire::getOrCreateForSite($siteId)->update(['derniere_maj' => now()]);
         return response()->json(['message' => 'Stock trouvé sauvegardé.']);
     }
 
-    /**
-     * Force un recalcul complet (si besoin manuel).
-     */
-    public function recalculer(): JsonResponse
+    public function recalculer(Request $request): JsonResponse
     {
-        $inventaire = Inventaire::getOrCreateForSite('Benguerir');
-        $inventaire->recalculer();
-        $inventaire->load('lignes.article');
-        return response()->json($inventaire);
+        $siteId = $this->getSiteId($request);
+        $inventaire = Inventaire::getOrCreateForSite($siteId);
+        $inventaire->recalculer($siteId);
+        return $this->show($request);
     }
 }

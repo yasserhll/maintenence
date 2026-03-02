@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
+import { useSite } from '../context/SiteContext';
 import { inventaireApi } from '../api/inventaire';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { Save, RefreshCw } from 'lucide-react';
+import { Save, RefreshCw, FileSpreadsheet, FileText } from 'lucide-react';
+import { exportExcel, exportPDF } from '../lib/exportInventaire';
 import type { LigneInventaire, Inventaire as InvType } from '../types/stock';
 
-// État local d'une ligne avec stock_trouve éditable
 interface LigneEditable extends LigneInventaire {
   stock_trouve_local: number;
   obs_local: string;
@@ -14,32 +16,41 @@ interface LigneEditable extends LigneInventaire {
 }
 
 export default function Inventaire() {
-  const [inventaire, setInventaire]   = useState<InvType | null>(null);
-  const [lignes, setLignes]           = useState<LigneEditable[]>([]);
-  const [loading, setLoading]         = useState(true);
-  const [saving, setSaving]           = useState(false);
-  const [recalculating, setRecalc]    = useState(false);
-  const [saved, setSaved]             = useState(false);
-  const [error, setError]             = useState<string | null>(null);
+  const { user, isSuperAdmin } = useAuth();
+  const { activeSiteId, activeSite } = useSite();
 
-  // Chargement initial de l'inventaire (une seule fois)
+  const [inventaire, setInventaire] = useState<InvType | null>(null);
+  const [lignes, setLignes]         = useState<LigneEditable[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [saving, setSaving]         = useState(false);
+  const [recalculating, setRecalc]  = useState(false);
+  const [saved, setSaved]           = useState(false);
+  const [error, setError]           = useState<string | null>(null);
+
+  // Détermine le site à utiliser
+  const siteId  = activeSiteId ?? user?.site_id ?? null;
+  const siteNom = isSuperAdmin ? (activeSite?.nom ?? 'Site') : (user?.site?.nom ?? 'Mon site');
+
+  // Recharger quand le site change
   useEffect(() => {
-    loadInventaire();
-  }, []);
+    if (siteId !== null) loadInventaire();
+  }, [siteId]);
+
+  const toEditable = (inv: InvType): LigneEditable[] =>
+    inv.lignes.map(l => ({
+      ...l,
+      stock_trouve_local: l.stock_trouve ?? 0,
+      obs_local:          l.observation ?? '',
+      modifie:            false,
+    }));
 
   const loadInventaire = async () => {
     try {
       setLoading(true);
       setError(null);
-      const inv = await inventaireApi.get();
+      const inv = await inventaireApi.get(siteId ?? undefined);
       setInventaire(inv);
-      // Initialiser les lignes éditables
-      setLignes(inv.lignes.map(l => ({
-        ...l,
-        stock_trouve_local: l.stock_trouve ?? l.stock_theorique,
-        obs_local:          l.observation ?? '',
-        modifie:            false,
-      })));
+      setLignes(toEditable(inv));
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -54,53 +65,33 @@ export default function Inventaire() {
     setSaved(false);
   };
 
-  const updateObs = (idx: number, val: string) => {
-    setLignes(prev => prev.map((l, i) =>
-      i === idx ? { ...l, obs_local: val, modifie: true } : l
-    ));
-    setSaved(false);
-  };
-
-  // Sauvegarde uniquement les lignes modifiées (stock_trouve)
   const handleSave = async () => {
     const modifiees = lignes.filter(l => l.modifie);
     if (modifiees.length === 0) return;
     setSaving(true);
     try {
       await inventaireApi.saveTrouves(
-        modifiees.map(l => ({
-          id:           l.id,
-          stock_trouve: l.stock_trouve_local,
-          observation:  l.obs_local,
-        }))
+        modifiees.map(l => ({ id: l.id, stock_trouve: l.stock_trouve_local, observation: l.obs_local })),
+        siteId ?? undefined
       );
-      // Marquer toutes comme sauvegardées
       setLignes(prev => prev.map(l => ({ ...l, modifie: false })));
       setSaved(true);
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   };
 
-  // Forcer un recalcul depuis le backend (après import Excel par exemple)
   const handleRecalculer = async () => {
     setRecalc(true);
     try {
-      const inv = await inventaireApi.recalculer();
+      const inv = await inventaireApi.recalculer(siteId ?? undefined);
       setInventaire(inv);
-      setLignes(inv.lignes.map(l => ({
-        ...l,
-        stock_trouve_local: l.stock_trouve ?? l.stock_theorique,
-        obs_local:          l.observation ?? '',
-        modifie:            false,
-      })));
+      setLignes(toEditable(inv));
       setSaved(false);
     } finally { setRecalc(false); }
   };
 
   const nbModifies      = lignes.filter(l => l.modifie).length;
   const nbSaisis        = lignes.filter(l => l.stock_trouve !== null).length;
-  const lignesAvecEcart = lignes.filter(l => l.stock_trouve !== null && l.stock_trouve !== l.stock_theorique);
+  const lignesAvecEcart = lignes.filter(l => l.stock_trouve !== null && l.stock_trouve_local !== l.stock_theorique);
   const totalEcartAbs   = lignesAvecEcart.reduce((s, l) => s + Math.abs(l.stock_trouve_local - l.stock_theorique), 0);
 
   if (loading) return <Skeleton />;
@@ -109,19 +100,32 @@ export default function Inventaire() {
   return (
     <div className="p-6 space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold">Inventaire du stock</h1>
           <p className="text-muted-foreground text-sm">
-            Site {inventaire?.site} — Créé le {inventaire?.date_creation}
+            <span className="font-medium text-foreground">{siteNom}</span>
+            {' — '}Créé le {inventaire?.date_creation}
             {inventaire?.derniere_maj && (
               <span className="ml-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
-                ✓ Mis à jour automatiquement : {new Date(inventaire.derniere_maj).toLocaleString('fr-FR')}
+                ✓ Mis à jour : {new Date(inventaire.derniere_maj).toLocaleString('fr-FR')}
               </span>
             )}
           </p>
         </div>
-        <div className="flex gap-2">
+
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm"
+            onClick={() => inventaire && exportExcel(inventaire, lignes.map(l => ({ ligne: l, stock_trouve_local: l.stock_trouve_local })))}
+            className="border-green-300 text-green-700 hover:bg-green-50 hover:border-green-400">
+            <FileSpreadsheet className="w-4 h-4 mr-1.5" />Excel
+          </Button>
+          <Button variant="outline" size="sm"
+            onClick={() => inventaire && exportPDF(inventaire, lignes.map(l => ({ ligne: l, stock_trouve_local: l.stock_trouve_local })))}
+            className="border-red-300 text-red-700 hover:bg-red-50 hover:border-red-400">
+            <FileText className="w-4 h-4 mr-1.5" />PDF
+          </Button>
+          <div className="w-px bg-border mx-1" />
           <Button variant="outline" onClick={handleRecalculer} disabled={recalculating} size="sm">
             <RefreshCw className={`w-4 h-4 mr-2 ${recalculating ? 'animate-spin' : ''}`} />
             Recalculer
@@ -129,7 +133,7 @@ export default function Inventaire() {
           {nbModifies > 0 && (
             <Button onClick={handleSave} disabled={saving}>
               <Save className="w-4 h-4 mr-2" />
-              {saving ? 'Sauvegarde...' : `Sauvegarder (${nbModifies} modifiés)`}
+              {saving ? 'Sauvegarde...' : `Sauvegarder (${nbModifies})`}
             </Button>
           )}
           {saved && nbModifies === 0 && (
@@ -140,52 +144,53 @@ export default function Inventaire() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <div className="bg-card border rounded-lg p-4">
-          <p className="text-xs text-muted-foreground uppercase tracking-wide">Articles</p>
-          <p className="text-2xl font-bold mt-1">{lignes.length}</p>
-        </div>
-        <div className="bg-card border rounded-lg p-4">
-          <p className="text-xs text-muted-foreground uppercase tracking-wide">Stock trouvé saisi</p>
-          <p className="text-2xl font-bold mt-1 text-blue-600">{nbSaisis} / {lignes.length}</p>
-        </div>
-        <div className="bg-card border rounded-lg p-4">
-          <p className="text-xs text-muted-foreground uppercase tracking-wide">Écarts détectés</p>
-          <p className="text-2xl font-bold mt-1 text-yellow-600">{lignesAvecEcart.length}</p>
-        </div>
-        <div className="bg-card border rounded-lg p-4">
-          <p className="text-xs text-muted-foreground uppercase tracking-wide">Total écart absolu</p>
-          <p className="text-2xl font-bold mt-1 text-destructive">{totalEcartAbs}</p>
-        </div>
+        {[
+          { label: 'Articles',           value: lignes.length,                     color: '' },
+          { label: 'Stock trouvé saisi', value: `${nbSaisis} / ${lignes.length}`,   color: 'text-blue-600' },
+          { label: 'Écarts détectés',    value: lignesAvecEcart.length,            color: 'text-yellow-600' },
+          { label: 'Total écart absolu', value: totalEcartAbs,                     color: 'text-destructive' },
+        ].map(s => (
+          <div key={s.label} className="bg-card border rounded-lg p-4">
+            <p className="text-xs text-muted-foreground uppercase tracking-wide">{s.label}</p>
+            <p className={`text-2xl font-bold mt-1 ${s.color}`}>{s.value}</p>
+          </div>
+        ))}
       </div>
 
-      {/* Bannière info */}
+      {/* Info */}
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">
-        💡 Le <strong>stock actuel (théorique)</strong> est mis à jour automatiquement à chaque entrée ou sortie enregistrée.
-        Saisissez le <strong>stock trouvé</strong> manuellement lors de votre comptage physique, puis cliquez sur <strong>Sauvegarder</strong>.
+        💡 Le <strong>stock actuel (théorique)</strong> est mis à jour automatiquement à chaque entrée ou sortie.
+        Saisissez le <strong>stock trouvé</strong> lors de votre comptage physique, puis <strong>Sauvegarder</strong>.
       </div>
 
       {/* Table */}
       <div className="bg-card rounded-lg border shadow-sm overflow-x-auto">
         <Table>
           <TableHeader>
-            <TableRow>
+            <TableRow className="bg-muted/30">
               <TableHead>Pièce</TableHead>
               <TableHead>Marque / REF</TableHead>
               <TableHead className="text-right">Stock initial</TableHead>
-              <TableHead className="text-right">Entrées</TableHead>
-              <TableHead className="text-right">Sorties</TableHead>
-              <TableHead className="text-right bg-blue-50">Stock actuel (théorique)</TableHead>
-              <TableHead className="text-right bg-green-50">Stock trouvé ✏️</TableHead>
+              <TableHead className="text-right text-green-700">Entrées</TableHead>
+              <TableHead className="text-right text-red-600">Sorties</TableHead>
+              <TableHead className="text-right bg-blue-50/60">Stock actuel (théorique)</TableHead>
+              <TableHead className="bg-green-50/60 min-w-[130px]">Stock trouvé ✏️</TableHead>
               <TableHead className="text-right">Écart</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
+            {lignes.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
+                  Aucun article pour ce site. Ajoutez des articles dans Stock Actuel.
+                </TableCell>
+              </TableRow>
+            )}
             {lignes.map((l, idx) => {
-              const ecart = l.stock_trouve !== null
-                ? l.stock_trouve_local - l.stock_theorique
-                : null;
+              const ecart    = l.stock_trouve_local - l.stock_theorique;
+              const hasSaved = l.stock_trouve !== null;
               return (
-                <TableRow key={l.id} className={l.modifie ? 'bg-yellow-50' : ''}>
+                <TableRow key={l.id} className={l.modifie ? 'bg-yellow-50' : 'hover:bg-muted/10'}>
                   <TableCell className="font-medium">{l.article?.designation || '—'}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {l.article?.marque && <span className="block">{l.article.marque}</span>}
@@ -193,27 +198,26 @@ export default function Inventaire() {
                   </TableCell>
                   <TableCell className="text-right text-muted-foreground">{l.article?.stock_initial ?? 0}</TableCell>
                   <TableCell className="text-right text-green-700 font-medium">
-                    +{(l.article?.stock_actuel ?? 0) - (l.article?.stock_initial ?? 0) + (l.stock_theorique - (l.article?.stock_initial ?? 0)) < 0 ? 0 : '?'}
+                    {(l.total_entrees ?? 0) > 0 ? `+${l.total_entrees}` : <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="text-right text-red-600 font-medium">
-                    -{Math.max(0, (l.article?.stock_initial ?? 0) - l.stock_theorique)}
+                    {(l.total_sorties ?? 0) > 0 ? `-${l.total_sorties}` : <span className="text-muted-foreground">—</span>}
                   </TableCell>
-                  <TableCell className="text-right font-bold bg-blue-50 text-blue-800">{l.stock_theorique}</TableCell>
-                  <TableCell className="bg-green-50">
+                  <TableCell className="text-right font-bold bg-blue-50/60 text-blue-800 text-lg">{l.stock_theorique}</TableCell>
+                  <TableCell className="bg-green-50/60">
                     <Input
                       type="number"
                       value={l.stock_trouve_local}
                       onChange={e => updateTrouve(idx, Number(e.target.value))}
-                      className="w-20 text-right"
+                      className="w-24 text-right ml-auto"
                       min="0"
                     />
                   </TableCell>
-                  <TableCell className={`text-right font-bold ${
-                    ecart === null ? 'text-muted-foreground' :
-                    ecart < 0     ? 'text-red-600' :
-                    ecart > 0     ? 'text-green-600' : 'text-muted-foreground'
+                  <TableCell className={`text-right font-bold text-base ${
+                    !hasSaved && !l.modifie ? 'text-muted-foreground' :
+                    ecart < 0 ? 'text-red-600' : ecart > 0 ? 'text-green-600' : 'text-muted-foreground'
                   }`}>
-                    {ecart === null ? '—' : ecart > 0 ? `+${ecart}` : ecart}
+                    {!hasSaved && !l.modifie ? '—' : ecart > 0 ? `+${ecart}` : ecart}
                   </TableCell>
                 </TableRow>
               );
@@ -229,7 +233,9 @@ function Skeleton() {
   return (
     <div className="p-6 space-y-4 animate-pulse">
       <div className="h-8 w-56 bg-muted rounded" />
-      <div className="grid grid-cols-4 gap-4">{[...Array(4)].map((_, i) => <div key={i} className="h-20 bg-muted rounded-lg" />)}</div>
+      <div className="grid grid-cols-4 gap-4">
+        {[...Array(4)].map((_, i) => <div key={i} className="h-20 bg-muted rounded-lg" />)}
+      </div>
       <div className="h-96 bg-muted rounded-lg" />
     </div>
   );

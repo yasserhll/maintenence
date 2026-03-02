@@ -27,10 +27,10 @@ export interface EntreePayload {
   article_id: number;
   quantite: number;
   date: string;
-  ref_bl?: string;
-  ref_article?: string;
-  fournisseur?: string;
-  observation?: string;
+  ref_bl?: string | null;
+  ref_article?: string | null;
+  fournisseur?: string | null;
+  observation?: string | null;
 }
 
 export interface Sortie {
@@ -47,8 +47,8 @@ export interface SortiePayload {
   article_id: number;
   quantite: number;
   date: string;
-  technicien?: string;
-  affectation?: string;
+  technicien?: string | null;
+  affectation?: string | null;
 }
 
 export interface LigneInventaire {
@@ -60,6 +60,8 @@ export interface LigneInventaire {
   stock_trouve: number | null;
   ecart: number | null;
   observation: string | null;
+  total_entrees?: number;
+  total_sorties?: number;
 }
 
 export interface Inventaire {

@@ -7,24 +7,12 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class LigneInventaire extends Model
 {
-    protected $table = 'lignes_inventaire';
-
+    protected $table    = 'lignes_inventaire';
     protected $fillable = [
-        'inventaire_id',
-        'article_id',
-        'stock_theorique',
-        'stock_trouve',
-        'ecart',
-        'observation',
+        'site_id', 'inventaire_id', 'article_id',
+        'stock_theorique', 'stock_trouve', 'ecart', 'observation',
     ];
 
-    public function article(): BelongsTo
-    {
-        return $this->belongsTo(Article::class);
-    }
-
-    public function inventaire(): BelongsTo
-    {
-        return $this->belongsTo(Inventaire::class);
-    }
+    public function article(): BelongsTo    { return $this->belongsTo(Article::class); }
+    public function inventaire(): BelongsTo { return $this->belongsTo(Inventaire::class); }
 }

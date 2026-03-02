@@ -1,9 +1,14 @@
 import { Package, ArrowDownToLine, ArrowUpFromLine, AlertTriangle } from 'lucide-react';
 import StatCard from '../components/StatCard';
 import { useAppData } from '../context/AppDataContext';
+import { useSite } from '../context/SiteContext';
+import { useAuth } from '../context/AuthContext';
 
 export default function Index() {
   const { dashboard, loading, error } = useAppData();
+  const { activeSite } = useSite();
+  const { user, isSuperAdmin } = useAuth();
+  const siteNom = isSuperAdmin ? (activeSite?.nom ?? 'Tous les sites') : (user?.site?.nom ?? 'Mon site');
 
   if (loading) return <Skeleton />;
   if (error)   return <div className="p-6 text-destructive">Erreur : {error}</div>;
@@ -13,7 +18,7 @@ export default function Index() {
     <div className="p-6 space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Tableau de bord</h1>
-        <p className="text-muted-foreground text-sm mt-1">Gestion de maintenance — Site Benguerir</p>
+        <p className="text-muted-foreground text-sm mt-1">Gestion de maintenance — <span className="font-medium text-foreground">{siteNom}</span></p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

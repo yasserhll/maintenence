@@ -10,13 +10,29 @@ use Illuminate\Http\Request;
 
 class ArticleController extends Controller
 {
-    public function index(): JsonResponse
+    private function siteId(Request $request): int
     {
-        return response()->json(Article::orderBy('designation')->get());
+        $user = $request->user();
+        if ($user->isSuperAdmin() && $request->has('site_id')) {
+            return (int) $request->site_id;
+        }
+        return (int) $user->site_id;
+    }
+
+    public function index(Request $request): JsonResponse
+    {
+        $query = Article::orderBy('designation');
+        if (!$request->user()->isSuperAdmin()) {
+            $query->where('site_id', $request->user()->site_id);
+        } elseif ($request->has('site_id')) {
+            $query->where('site_id', $request->site_id);
+        }
+        return response()->json($query->get());
     }
 
     public function store(Request $request): JsonResponse
     {
+        $siteId = $this->siteId($request);
         $data = $request->validate([
             'designation'   => 'required|string|max:255',
             'reference'     => 'nullable|string|max:100',
@@ -28,11 +44,12 @@ class ArticleController extends Controller
             'prix_unitaire' => 'numeric|min:0',
         ]);
 
+        $data['site_id']     = $siteId;
+        $data['stock_actuel'] = $data['stock_initial'] ?? 0;
         $article = Article::create($data);
 
-        // Ajouter la ligne dans l'inventaire automatiquement
-        $inventaire = Inventaire::getOrCreateForSite('Benguerir');
-        $inventaire->recalculer();
+        $inventaire = Inventaire::getOrCreateForSite($siteId);
+        $inventaire->mettreAJourLigne($article);
 
         return response()->json($article, 201);
     }
@@ -57,13 +74,13 @@ class ArticleController extends Controller
 
         $article->update($data);
 
-        // Si stock_initial change, recalculer l'inventaire
         if (isset($data['stock_initial'])) {
-            $inventaire = Inventaire::getOrCreateForSite('Benguerir');
-            $inventaire->recalculer();
+            $article->recalculerStock();
+            $inventaire = Inventaire::getOrCreateForSite($article->site_id);
+            $inventaire->mettreAJourLigne($article);
         }
 
-        return response()->json($article);
+        return response()->json($article->fresh());
     }
 
     public function destroy(Article $article): JsonResponse
